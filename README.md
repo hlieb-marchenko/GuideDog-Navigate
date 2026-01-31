@@ -1,2 +1,3 @@
 # GuideDog-Navigate
-An AI-powered Navigation App for visually impaired people
+## Idea
+With this app I aim to empower blind and visually impaired individuals by providing them with the confidence and ability to commute independently, without relying on others. 
