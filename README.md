@@ -17,6 +17,14 @@ The system focuses on:
 
 ---
 
+## 📸 Screenshots
+
+![Home Screen](./GuideDog-Navigate/img/Simulator%20Screenshot%20-%20iPhone%2017%20-%202026-05-31%20at%2017.37.09.png)
+![Navigation Screen](./GuideDog-Navigate/img/Simulator%20Screenshot%20-%20iPhone%2017%20-%202026-05-31%20at%2017.37.18.png)
+![Settings](./GuideDog-Navigate/img/Simulator%20Screenshot%20-%20iPhone%2017%20-%202026-05-31%20at%2017.52.20.png)
+![Settings](./GuideDog-Navigate/img/Simulator%20Screenshot%20-%20iPhone%2017%20-%202026-05-31%20at%2017.52.33.png)
+
+
 ## 🚀 Features
 
 - 📍 Real-time GPS tracking and location updates
