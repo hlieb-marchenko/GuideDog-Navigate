@@ -1,0 +1,33 @@
+{
+  "name": "guidedog-navigate",
+  "license": "0BSD",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@mapbox/polyline": "^1.2.1",
+    "@rnmapbox/maps": "^10.1.33",
+    "expo": "~54.0.33",
+    "expo-location": "~19.0.8",
+    "expo-speech": "~14.0.8",
+    "expo-status-bar": "~3.0.9",
+    "nvm": "^0.0.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-maps": "1.20.1",
+    "react-native-web": "^0.21.0"
+  },
+  "private": true,
+  "devDependencies": {
+    "@react-native-community/cli": "^20.1.2",
+    "@react-native/metro-config": "^0.85.0",
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  }
+}
