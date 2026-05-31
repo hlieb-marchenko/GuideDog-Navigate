@@ -1,5 +1,5 @@
-// GuideDog Navigate — Visually Impaired Edition
-// Build: npx expo run:ios (Terminal 2) after npx react-native start (Terminal 1)
+// GuideDog Navigate — Liquid Glass Edition
+// Accessibility-first walking navigator for visually impaired users
 
 import React, {
   useCallback,
@@ -23,12 +23,17 @@ import {
   Vibration,
   View,
 } from "react-native";
+import { BlurView }   from "expo-blur";
+import Mapbox          from "@rnmapbox/maps";
+import * as Location   from "expo-location";
+import * as Speech     from "expo-speech";
+import AsyncStorage    from "@react-native-async-storage/async-storage";
 
-import Mapbox from "@rnmapbox/maps";
-import * as Location from "expo-location";
-import * as Speech from "expo-speech";
+import SettingsScreen, {
+  DEFAULT_SETTINGS,
+  Settings,
+} from "./src/SettingsScreen";
 
-import SettingsScreen, { DEFAULT_SETTINGS, Settings } from "./src/SettingsScreen";
 import {
   bearingToCardinal,
   buildVoiceInstruction,
@@ -40,43 +45,59 @@ import {
   turnIcon,
 } from "./src/navigation";
 
-// ─── Config ──────────────────────────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────────────────────
 
-const GRAPHHOPPER_KEY = "";
-const MAPBOX_TOKEN    = "";
+const GRAPHHOPPER_KEY = process.env.GRAPHHOPPER_KEY;
+const MAPBOX_TOKEN    = process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
+const SETTINGS_KEY    = "@guidedog_settings";
 
-// Simulator fallback — Frankfurt city centre
 const FALLBACK_COORDS: Coords = { latitude: 50.1109, longitude: 8.6821 };
-
-const ARRIVAL_RADIUS_M = 15;
-const REROUTE_RADIUS_M = 50;
+const ARRIVAL_RADIUS_M  = 15;
+const REROUTE_RADIUS_M  = 50;
 
 Mapbox.setAccessToken(MAPBOX_TOKEN);
 
 const { width } = Dimensions.get("window");
 
+// ─── Colour Tokens ────────────────────────────────────────────────────────────
+
+const C = {
+  bg:          "#050b18",
+  glass:       "rgba(255,255,255,0.06)",
+  glassBorder: "rgba(255,255,255,0.13)",
+  glassHover:  "rgba(99,210,255,0.12)",
+  accent:      "#63D2FF",
+  accentSoft:  "rgba(99,210,255,0.22)",
+  accentGreen: "#6EE7B7",
+  text:        "#EEF4FF",
+  textSub:     "rgba(238,244,255,0.50)",
+  textDim:     "rgba(238,244,255,0.28)",
+  glow:        "rgba(99,210,255,0.18)",
+  danger:      "#FF6B6B",
+  dangerSoft:  "rgba(255,107,107,0.18)",
+};
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Coords {
-  latitude: number;
+  latitude:  number;
   longitude: number;
-  heading?: number | null;
-  speed?: number | null;
+  heading?:  number | null;
+  speed?:    number | null;
 }
 
 interface Suggestion {
-  place_id: string;
+  place_id:     string;
   display_name: string;
-  lat: string;
-  lon: string;
+  lat:          string;
+  lon:          string;
 }
 
 interface Instruction {
-  text: string;
+  text:     string;
   distance: number;
-  sign: number;
+  sign:     number;
   interval: [number, number];
-  points?: { lat: number; lon: number }[];
 }
 
 type AppState = "idle" | "routing" | "navigating" | "arrived";
@@ -84,15 +105,13 @@ type AppState = "idle" | "routing" | "navigating" | "arrived";
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function haversine(a: Coords, b: Coords): number {
-  const R = 6_371_000;
+  const R   = 6_371_000;
   const rad = (d: number) => (d * Math.PI) / 180;
-  const dLat = rad(b.latitude - a.latitude);
+  const dLat = rad(b.latitude  - a.latitude);
   const dLon = rad(b.longitude - a.longitude);
   const s =
     Math.sin(dLat / 2) ** 2 +
-    Math.cos(rad(a.latitude)) *
-      Math.cos(rad(b.latitude)) *
-      Math.sin(dLon / 2) ** 2;
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
@@ -102,16 +121,61 @@ function formatDuration(ms: number): string {
   return `${Math.floor(min / 60)}h ${min % 60}min`;
 }
 
-// Compute initial bearing between two coords (degrees)
 function initialBearing(from: Coords, to: Coords): number {
-  const rad = (d: number) => (d * Math.PI) / 180;
+  const rad  = (d: number) => (d * Math.PI) / 180;
   const dLon = rad(to.longitude - from.longitude);
-  const y = Math.sin(dLon) * Math.cos(rad(to.latitude));
-  const x =
+  const y    = Math.sin(dLon) * Math.cos(rad(to.latitude));
+  const x    =
     Math.cos(rad(from.latitude)) * Math.sin(rad(to.latitude)) -
     Math.sin(rad(from.latitude)) * Math.cos(rad(to.latitude)) * Math.cos(dLon);
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
+
+// ─── Animated Glass Pill Button (top controls) ────────────────────────────────
+
+function ControlBtn({
+  icon, label, onPress, vibration: vib, badge,
+}: {
+  icon: string; label: string; onPress: () => void; vibration: boolean; badge?: string;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const pressIn  = () => Animated.spring(scale, { toValue: 0.88, useNativeDriver: true, speed: 50 }).start();
+  const pressOut = () => Animated.spring(scale, { toValue: 1,    useNativeDriver: true, speed: 30 }).start();
+
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <TouchableOpacity
+        onPress={() => { if (vib) Vibration.vibrate(30); onPress(); }}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
+        activeOpacity={1}
+        style={cb.btn}
+        accessibilityLabel={label}
+        accessibilityRole="button"
+      >
+        <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+        <Text style={cb.icon}>{icon}</Text>
+        {badge && <View style={cb.badge}><Text style={cb.badgeText}>{badge}</Text></View>}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+const cb = StyleSheet.create({
+  btn: {
+    width: 52, height: 52, borderRadius: 26,
+    overflow: "hidden",
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1, borderColor: C.glassBorder,
+  },
+  icon:      { color: C.accent, fontSize: 22, zIndex: 1 },
+  badge: {
+    position: "absolute", top: 6, right: 6,
+    backgroundColor: C.accent,
+    borderRadius: 6, paddingHorizontal: 4, paddingVertical: 1,
+  },
+  badgeText: { color: C.bg, fontSize: 9, fontWeight: "800" },
+});
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -125,8 +189,7 @@ export default function App() {
   const routeCoordsRef = useRef<number[][]>([]);
   const announcedRef   = useRef<Set<number>>(new Set());
 
-  const bannerAnim  = useRef(new Animated.Value(0)).current;
-  const settingsAnim = useRef(new Animated.Value(0)).current;
+  const bannerAnim = useRef(new Animated.Value(0)).current;
 
   const [appState,             setAppState]             = useState<AppState>("idle");
   const [location,             setLocation]             = useState<Coords | null>(null);
@@ -144,6 +207,20 @@ export default function App() {
   const [settings,             setSettings]             = useState<Settings>(DEFAULT_SETTINGS);
   const [showSettings,         setShowSettings]         = useState(false);
   const [statusMsg,            setStatusMsg]            = useState<string | null>(null);
+
+  // ── Persist & load settings ───────────────────────────────────────────────
+
+  useEffect(() => {
+    AsyncStorage.getItem(SETTINGS_KEY)
+      .then((raw) => { if (raw) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) }); })
+      .catch(console.warn);
+  }, []);
+
+  const handleSaveSettings = (s: Settings) => {
+    setSettings(s);
+    AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(s)).catch(console.warn);
+    speakInstruction("Settings saved.", s.voiceRate, s.voiceIdentifier);
+  };
 
   // ── Location ──────────────────────────────────────────────────────────────
 
@@ -164,7 +241,7 @@ export default function App() {
   const initLocation = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== "granted") {
-      setLocationError("Location permission denied. Using default location.");
+      setLocationError("Location permission denied. Using Frankfurt as fallback.");
       applyLocation(FALLBACK_COORDS, false);
       return;
     }
@@ -193,10 +270,10 @@ export default function App() {
 
   const followUser = (coords: Coords, animated: boolean) => {
     cameraRef.current?.setCamera({
-      centerCoordinate: [coords.longitude, coords.latitude],
-      heading: (coords.speed ?? 0) > 0.5 ? coords.heading ?? 0 : undefined,
-      pitch: 60,
-      zoomLevel: 18,
+      centerCoordinate:  [coords.longitude, coords.latitude],
+      heading:           (coords.speed ?? 0) > 0.5 ? coords.heading ?? 0 : undefined,
+      pitch:             60,
+      zoomLevel:         18,
       animationDuration: animated ? 600 : 0,
     });
   };
@@ -209,13 +286,11 @@ export default function App() {
 
       const distToDest = haversine(coords, destination);
 
-      // Arrival
       if (distToDest < ARRIVAL_RADIUS_M) {
         handleArrival();
         return;
       }
 
-      // Off-route reroute
       if (
         !reroutingRef.current &&
         instrIndexRef.current >= instructions.length &&
@@ -231,19 +306,14 @@ export default function App() {
         return;
       }
 
-      // Check upcoming instructions
       const announceAt = settings.announceEarly ? 50 : 30;
       for (let i = instrIndexRef.current; i < instructions.length; i++) {
         const instr = instructions[i];
         if (announcedRef.current.has(i)) continue;
-
-        // Estimate distance to this instruction point
         if (instr.distance < announceAt || i === instrIndexRef.current) {
           announcedRef.current.add(i);
           instrIndexRef.current = i + 1;
           setCurrentInstr(instructions[i + 1] ?? null);
-
-          // Build and speak rich instruction async
           buildAndSpeakInstruction(instr, coords, i === 0).catch(console.warn);
           if (settings.vibration) Vibration.vibrate(120);
           break;
@@ -260,23 +330,18 @@ export default function App() {
     fromCoords: Coords,
     isStart: boolean
   ) => {
-    // Fetch OSM context in parallel
     const [crossing, streetName] = await Promise.all([
       fetchCrossingInfo(fromCoords.latitude, fromCoords.longitude),
       fetchStreetName(fromCoords.latitude, fromCoords.longitude),
     ]);
 
-    // Get next street name if available
     const nextIdx = instrIndexRef.current;
     let nextStreetName: string | null = null;
     if (nextIdx < instructions.length) {
-      const nextInstr = instructions[nextIdx];
-      // Extract street name from GraphHopper text heuristically
-      const match = nextInstr.text.match(/onto (.+)$/i);
+      const match = instructions[nextIdx].text.match(/onto (.+)$/i);
       nextStreetName = match ? match[1] : null;
     }
 
-    // Compute start bearing
     let startBearing: number | null = null;
     if (isStart && routeCoordsRef.current.length >= 2) {
       const [lon1, lat1] = routeCoordsRef.current[0];
@@ -288,16 +353,16 @@ export default function App() {
     }
 
     const voiceText = await buildVoiceInstruction({
-      instrText: instr.text,
-      sign: instr.sign,
-      distanceM: instr.distance,
-      stepLength: settings.stepLengthM,
+      instrText:     instr.text,
+      sign:          instr.sign,
+      distanceM:     instr.distance,
+      stepLength:    settings.stepLengthM,
       streetName,
       nextStreetName,
       crossing,
       isStart,
       startBearing,
-      routeType: settings.quietRoute ? "quiet" : "normal",
+      routeType:     settings.quietRoute ? "quiet" : "normal",
     });
 
     await speakInstruction(voiceText, settings.voiceRate, settings.voiceIdentifier);
@@ -314,6 +379,7 @@ export default function App() {
       settings.voiceRate, settings.voiceIdentifier
     );
     if (settings.vibration) Vibration.vibrate([0, 250, 150, 250, 150, 400]);
+    AccessibilityInfo.announceForAccessibility("You have arrived at your destination!");
     showBanner();
   };
 
@@ -338,12 +404,20 @@ export default function App() {
 
   const fetchSuggestions = async (text: string) => {
     try {
+      const loc = locationRef.current;
+      const viewbox = loc
+        ? `&viewbox=${loc.longitude - 0.5},${loc.latitude + 0.5},${loc.longitude + 0.5},${loc.latitude - 0.5}&bounded=0`
+        : "";
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=6&addressdetails=1`,
-        { headers: { "User-Agent": "GuideDogNavigate/1.0", "Accept-Language": "en" } }
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=6&addressdetails=1${viewbox}`,
+        { headers: { "User-Agent": "GuideDogNavigate/2.0", "Accept-Language": "en" } }
       );
       if (!res.ok) throw new Error();
-      setSuggestions(await res.json());
+      const data = await res.json();
+      setSuggestions(data);
+      if (data.length > 0) {
+        AccessibilityInfo.announceForAccessibility(`${data.length} results found.`);
+      }
     } catch {
       setSuggestions([]);
     } finally {
@@ -357,8 +431,11 @@ export default function App() {
       speakInstruction("Waiting for your location. Please try again.", settings.voiceRate, settings.voiceIdentifier);
       return;
     }
-    setQuery(item.display_name.split(",")[0]);
+    const name = item.display_name.split(",")[0];
+    setQuery(name);
     setSuggestions([]);
+    if (settings.vibration) Vibration.vibrate(60);
+    speakInstruction(`Routing to ${name}.`, settings.voiceRate, settings.voiceIdentifier);
     buildRoute({ latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) });
   };
 
@@ -366,7 +443,6 @@ export default function App() {
 
   const buildRoute = async (dest: Coords) => {
     const currentLoc = locationRef.current;
-
     if (!currentLoc) return;
 
     setIsLoadingRoute(true);
@@ -375,130 +451,70 @@ export default function App() {
     try {
       const body: any = {
         points: [
-          [
-            currentLoc.longitude,
-            currentLoc.latitude,
-          ],
-          [dest.longitude, dest.latitude],
+          [currentLoc.longitude, currentLoc.latitude],
+          [dest.longitude,       dest.latitude],
         ],
-
-        profile: "foot",
-        instructions: true,
-        points_encoded: false,
-        locale: "en",
+        profile:          "foot",
+        instructions:     true,
+        points_encoded:   false,
+        locale:           "en",
       };
 
       if (settings.quietRoute) {
-        body["ch.disable"] = true;
-
-        body.custom_model = {
+        body["ch.disable"]  = true;
+        body.custom_model   = {
           priority: [
-            {
-              if: "road_class == PRIMARY",
-              multiply_by: "0.05",
-            },
-            {
-              if: "road_class == SECONDARY",
-              multiply_by: "0.2",
-            },
-            {
-              if: "road_class == TERTIARY",
-              multiply_by: "0.5",
-            },
-            {
-              if:
-                "road_class == RESIDENTIAL",
-              multiply_by: "1.3",
-            },
-            {
-              if:
-                "road_environment == TUNNEL",
-              multiply_by: "0.3",
-            },
+            { if: "road_class == PRIMARY",     multiply_by: "0.05" },
+            { if: "road_class == SECONDARY",   multiply_by: "0.2"  },
+            { if: "road_class == TERTIARY",    multiply_by: "0.5"  },
+            { if: "road_class == RESIDENTIAL", multiply_by: "1.3"  },
+            { if: "road_environment == TUNNEL",multiply_by: "0.3"  },
           ],
         };
       }
 
-      const res = await fetch(
+      const res  = await fetch(
         `https://graphhopper.com/api/1/route?key=${GRAPHHOPPER_KEY}`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify(body),
-        }
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
       );
-
       const data = await res.json();
 
-      if (!data.paths?.length) {
-        throw new Error("No route");
-      }
+      if (!data.paths?.length) throw new Error("No route");
 
-      const path = data.paths[0];
-
-      const coords =
-        path.points.coordinates.map(
-          (c: number[]) => [c[0], c[1]]
-        );
-
+      const path   = data.paths[0];
+      const coords = path.points.coordinates.map((c: number[]) => [c[0], c[1]]);
       routeCoordsRef.current = coords;
 
-      const parsed: Instruction[] =
-        (path.instructions ?? []).map(
-          (i: any) => ({
-            text: i.text,
-            distance: i.distance,
-            sign: i.sign,
-            interval: i.interval,
-          })
-        );
+      const parsed: Instruction[] = (path.instructions ?? []).map((i: any) => ({
+        text:     i.text,
+        distance: i.distance,
+        sign:     i.sign,
+        interval: i.interval,
+      }));
 
       setRoute({
         type: "Feature",
-        geometry: {
-          type: "LineString",
-          coordinates: coords,
-        },
+        geometry: { type: "LineString", coordinates: coords },
         properties: {},
       });
 
       setDestination(dest);
-
       setRouteDistance(path.distance);
       setRouteTime(path.time);
-
       setInstructions(parsed);
 
-      instrIndexRef.current = 0;
-      announcedRef.current = new Set();
-
+      instrIndexRef.current   = 0;
+      announcedRef.current    = new Set();
       setCurrentInstr(parsed[0] ?? null);
-
       setAppState("navigating");
-
       showBanner();
 
       if (parsed.length > 0) {
-        await buildAndSpeakInstruction(
-          parsed[0],
-          currentLoc,
-          true
-        );
+        await buildAndSpeakInstruction(parsed[0], currentLoc, true);
       }
     } catch (e) {
       console.error(e);
-
-      speakInstruction(
-        "Could not find a route.",
-        settings.voiceRate,
-        settings.voiceIdentifier
-      );
-
+      speakInstruction("Could not find a route. Please try again.", settings.voiceRate, settings.voiceIdentifier);
       setAppState("idle");
     } finally {
       setIsLoadingRoute(false);
@@ -519,14 +535,19 @@ export default function App() {
     setRouteTime(0);
     setQuery("");
     setStatusMsg(null);
-    instrIndexRef.current = 0;
-    reroutingRef.current = false;
-    announcedRef.current = new Set();
+    instrIndexRef.current  = 0;
+    reroutingRef.current   = false;
+    announcedRef.current   = new Set();
     routeCoordsRef.current = [];
+    if (settings.vibration) Vibration.vibrate(80);
+    AccessibilityInfo.announceForAccessibility("Navigation stopped.");
   };
 
   const repeatInstruction = () => {
-    if (currentInstr) speakInstruction(currentInstr.text, settings.voiceRate, settings.voiceIdentifier);
+    if (currentInstr) {
+      if (settings.vibration) Vibration.vibrate(40);
+      speakInstruction(currentInstr.text, settings.voiceRate, settings.voiceIdentifier);
+    }
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -536,17 +557,20 @@ export default function App() {
   const showSearch   = appState === "idle" || appState === "routing";
 
   const bannerTranslateY = bannerAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-200, 0],
+    inputRange: [0, 1], outputRange: [-200, 0],
   });
 
   const stepsRemaining = metersToSteps(routeDistance, settings.stepLengthM);
+  const fs             = settings.largeText ? 1.18 : 1;
+
+  // Route line colour: green for quiet, blue for normal
+  const routeColour = settings.quietRoute ? C.accentGreen : C.accent;
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.root}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
       {/* ── Map ── */}
       <Mapbox.MapView
@@ -574,23 +598,28 @@ export default function App() {
 
         {route && (
           <>
+            {/* Shadow */}
             <Mapbox.ShapeSource id="routeShadow" shape={route}>
               <Mapbox.LineLayer
                 id="routeShadowLine"
-                style={{ lineColor: "#000", lineWidth: 12, lineCap: "round", lineJoin: "round", lineOpacity: 0.3 }}
+                style={{ lineColor: "#000", lineWidth: 14, lineCap: "round", lineJoin: "round", lineOpacity: 0.35 }}
                 layerIndex={1}
               />
             </Mapbox.ShapeSource>
+            {/* Glow */}
+            <Mapbox.ShapeSource id="routeGlow" shape={route}>
+              <Mapbox.LineLayer
+                id="routeGlowLine"
+                style={{ lineColor: routeColour, lineWidth: 14, lineCap: "round", lineJoin: "round", lineOpacity: 0.18 }}
+                layerIndex={2}
+              />
+            </Mapbox.ShapeSource>
+            {/* Main */}
             <Mapbox.ShapeSource id="route" shape={route}>
               <Mapbox.LineLayer
                 id="routeLine"
-                style={{
-                  lineColor: settings.quietRoute ? "#4ADE80" : "#38BDF8",
-                  lineWidth: 6,
-                  lineCap: "round",
-                  lineJoin: "round",
-                }}
-                layerIndex={2}
+                style={{ lineColor: routeColour, lineWidth: 5, lineCap: "round", lineJoin: "round" }}
+                layerIndex={3}
               />
             </Mapbox.ShapeSource>
           </>
@@ -600,39 +629,46 @@ export default function App() {
       {/* ── Location error ── */}
       {locationError && (
         <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>{locationError}</Text>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <Text style={[styles.errorText, { fontSize: 14 * fs }]}>{locationError}</Text>
         </View>
       )}
 
       {/* ── Search panel ── */}
       {showSearch && (
         <View style={styles.searchPanel}>
+          <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
+
           <View style={styles.searchRow}>
             <Text style={styles.searchIcon}>⌕</Text>
             <TextInput
-              style={styles.searchInput}
+              style={[styles.searchInput, { fontSize: 17 * fs }]}
               placeholder="Where to?"
-              placeholderTextColor="#475569"
+              placeholderTextColor={C.textDim}
               value={query}
               onChangeText={onQueryChange}
               returnKeyType="search"
               onSubmitEditing={() => suggestions.length > 0 && selectSuggestion(suggestions[0])}
               autoCorrect={false}
               autoCapitalize="none"
-              accessibilityLabel="Destination search"
-              accessibilityHint="Type your destination and select from the list"
+              accessibilityLabel="Destination search field"
+              accessibilityHint="Type your destination then select from the list below"
+              clearButtonMode="while-editing"
             />
-            {isLoadingSuggestions ? (
-              <ActivityIndicator color="#38BDF8" style={{ marginRight: 16 }} />
-            ) : query.length > 0 ? (
+            {isLoadingSuggestions && (
+              <ActivityIndicator color={C.accent} style={{ marginRight: 16 }} />
+            )}
+            {!isLoadingSuggestions && query.length > 0 && (
               <TouchableOpacity
                 onPress={() => { setQuery(""); setSuggestions([]); }}
                 style={styles.clearBtn}
                 accessibilityLabel="Clear search"
+                accessibilityRole="button"
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
                 <Text style={styles.clearBtnText}>✕</Text>
               </TouchableOpacity>
-            ) : null}
+            )}
           </View>
 
           {suggestions.length > 0 && (
@@ -641,18 +677,19 @@ export default function App() {
               keyExtractor={(item) => item.place_id}
               keyboardShouldPersistTaps="handled"
               style={styles.suggestionList}
-              renderItem={({ item }) => (
+              renderItem={({ item, index }) => (
                 <TouchableOpacity
                   style={styles.suggestionItem}
                   onPress={() => selectSuggestion(item)}
                   activeOpacity={0.7}
-                  accessibilityLabel={item.display_name}
+                  accessibilityLabel={`Result ${index + 1}: ${item.display_name}`}
                   accessibilityRole="button"
+                  accessibilityHint="Double-tap to navigate here"
                 >
-                  <Text style={styles.suggestionMain} numberOfLines={1}>
+                  <Text style={[styles.suggestionMain, { fontSize: 16 * fs }]} numberOfLines={1}>
                     {item.display_name.split(",")[0]}
                   </Text>
-                  <Text style={styles.suggestionSub} numberOfLines={1}>
+                  <Text style={[styles.suggestionSub, { fontSize: 13 * fs }]} numberOfLines={1}>
                     {item.display_name.split(",").slice(1, 3).join(",")}
                   </Text>
                 </TouchableOpacity>
@@ -660,10 +697,9 @@ export default function App() {
             />
           )}
 
-          {/* Quiet route badge */}
           {settings.quietRoute && (
             <View style={styles.quietBadge}>
-              <Text style={styles.quietBadgeText}>🌿 Quiet Route Active</Text>
+              <Text style={[styles.quietBadgeText, { fontSize: 13 * fs }]}>🌿 Quiet Route Active</Text>
             </View>
           )}
         </View>
@@ -672,8 +708,9 @@ export default function App() {
       {/* ── Loading overlay ── */}
       {isLoadingRoute && (
         <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#38BDF8" />
-          <Text style={styles.loadingText}>
+          <BlurView intensity={70} tint="dark" style={StyleSheet.absoluteFill} />
+          <ActivityIndicator size="large" color={C.accent} />
+          <Text style={[styles.loadingText, { fontSize: 16 * fs }]}>
             {settings.quietRoute ? "Finding quietest route…" : "Finding best route…"}
           </Text>
         </View>
@@ -682,18 +719,22 @@ export default function App() {
       {/* ── Status message (rerouting etc) ── */}
       {statusMsg && (
         <View style={styles.statusMsg}>
-          <Text style={styles.statusMsgText}>{statusMsg}</Text>
+          <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
+          <Text style={[styles.statusMsgText, { fontSize: 14 * fs }]}>{statusMsg}</Text>
         </View>
       )}
 
       {/* ── Turn-by-turn banner ── */}
       {(isNavigating || isArrived) && (
         <Animated.View style={[styles.navBanner, { transform: [{ translateY: bannerTranslateY }] }]}>
+          <BlurView intensity={70} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.navBannerBorder} />
+
           {isArrived ? (
-            <View style={styles.arrivedContent}>
+            <View style={styles.arrivedContent} accessible accessibilityLiveRegion="assertive">
               <Text style={styles.arrivedEmoji}>🎉</Text>
-              <Text style={styles.arrivedTitle}>You have arrived!</Text>
-              <Text style={styles.arrivedSub}>
+              <Text style={[styles.arrivedTitle, { fontSize: 22 * fs }]}>You have arrived!</Text>
+              <Text style={[styles.arrivedSub, { fontSize: 14 * fs }]}>
                 {stepsRemaining.toLocaleString()} steps walked
               </Text>
             </View>
@@ -702,18 +743,18 @@ export default function App() {
               style={styles.instrContent}
               onPress={repeatInstruction}
               activeOpacity={0.85}
-              accessibilityLabel={`Current instruction: ${currentInstr.text}. Tap to repeat.`}
+              accessibilityLabel={`${currentInstr.text}. Distance: ${formatStepsAndMeters(currentInstr.distance, settings.stepLengthM)}. Double-tap to repeat.`}
               accessibilityRole="button"
+              accessibilityLiveRegion="assertive"
             >
-              <View style={[
-                styles.turnIconBox,
-                settings.quietRoute && styles.turnIconBoxQuiet,
-              ]}>
+              <View style={[styles.turnIconBox, settings.quietRoute && styles.turnIconBoxQuiet]}>
                 <Text style={styles.turnIconText}>{turnIcon(currentInstr.sign)}</Text>
               </View>
               <View style={styles.instrTextBox}>
-                <Text style={styles.instrText} numberOfLines={3}>{currentInstr.text}</Text>
-                <Text style={styles.instrDist}>
+                <Text style={[styles.instrText, { fontSize: 18 * fs }]} numberOfLines={3}>
+                  {currentInstr.text}
+                </Text>
+                <Text style={[styles.instrDist, { fontSize: 14 * fs }]}>
                   {formatStepsAndMeters(currentInstr.distance, settings.stepLengthM)}
                 </Text>
               </View>
@@ -726,10 +767,13 @@ export default function App() {
       {/* ── Bottom bar ── */}
       {(isNavigating || isArrived) && (
         <View style={styles.bottomBar}>
+          <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
           {!isArrived && (
             <View>
-              <Text style={styles.etaTime}>{formatDuration(routeTime)}</Text>
-              <Text style={styles.etaDist}>
+              <Text style={[styles.etaTime, { fontSize: 24 * fs }]} accessibilityLabel={`Estimated time: ${formatDuration(routeTime)}`}>
+                {formatDuration(routeTime)}
+              </Text>
+              <Text style={[styles.etaDist, { fontSize: 13 * fs }]}>
                 {formatStepsAndMeters(routeDistance, settings.stepLengthM)}
               </Text>
             </View>
@@ -737,45 +781,44 @@ export default function App() {
           <TouchableOpacity
             style={styles.stopBtn}
             onPress={stopNavigation}
-            accessibilityLabel="End route"
+            accessibilityLabel="End navigation"
             accessibilityRole="button"
+            accessibilityHint="Double-tap to stop the current route"
           >
-            <Text style={styles.stopBtnText}>✕  End Route</Text>
+            <Text style={[styles.stopBtnText, { fontSize: 15 * fs }]}>✕  End Route</Text>
           </TouchableOpacity>
         </View>
       )}
 
       {/* ── Top-right controls ── */}
       <View style={styles.topControls}>
-        {/* Settings button */}
-        <TouchableOpacity
-          style={styles.controlBtn}
+        <ControlBtn
+          icon="⚙"
+          label="Open settings"
           onPress={() => setShowSettings(true)}
-          accessibilityLabel="Open settings"
-          accessibilityRole="button"
-        >
-          <Text style={styles.controlIcon}>⚙</Text>
-        </TouchableOpacity>
-
-        {/* Recenter */}
-        <TouchableOpacity
-          style={styles.controlBtn}
+          vibration={settings.vibration}
+        />
+        <ControlBtn
+          icon="◎"
+          label="Re-center map on your location"
           onPress={() => location && followUser(location, true)}
-          accessibilityLabel="Re-center map on your location"
-          accessibilityRole="button"
-        >
-          <Text style={styles.controlIcon}>◎</Text>
-        </TouchableOpacity>
+          vibration={settings.vibration}
+        />
+        {isNavigating && (
+          <ControlBtn
+            icon="🔊"
+            label="Repeat last instruction"
+            onPress={repeatInstruction}
+            vibration={settings.vibration}
+          />
+        )}
       </View>
 
       {/* ── Settings modal ── */}
       <SettingsScreen
         visible={showSettings}
         settings={settings}
-        onSave={(s) => {
-          setSettings(s);
-          speakInstruction("Settings saved.", s.voiceRate, s.voiceIdentifier);
-        }}
+        onSave={handleSaveSettings}
         onClose={() => setShowSettings(false)}
       />
     </View>
@@ -785,148 +828,165 @@ export default function App() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0a0f1e" },
+  root: { flex: 1, backgroundColor: C.bg },
   map:  { flex: 1 },
 
+  // User location dot
   userDotOuter: {
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: "rgba(56,189,248,0.2)",
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: "rgba(99,210,255,0.18)",
     alignItems: "center", justifyContent: "center",
-    borderWidth: 2, borderColor: "rgba(56,189,248,0.5)",
+    borderWidth: 2, borderColor: "rgba(99,210,255,0.5)",
+    shadowColor: C.accent, shadowRadius: 10, shadowOpacity: 0.6,
   },
-  userDotInner: { width: 14, height: 14, borderRadius: 7, backgroundColor: "#38BDF8" },
+  userDotInner: { width: 14, height: 14, borderRadius: 7, backgroundColor: C.accent },
 
+  // Destination pin
   destPin: {
     width: 20, height: 20, borderRadius: 10,
-    backgroundColor: "#F472B6", borderWidth: 3, borderColor: "white",
+    backgroundColor: "#F472B6",
+    borderWidth: 3, borderColor: "white",
+    shadowColor: "#F472B6", shadowRadius: 8, shadowOpacity: 0.8,
   },
 
+  // Error banner
   errorBanner: {
     position: "absolute", top: 60, alignSelf: "center",
-    backgroundColor: "#7f1d1d", paddingHorizontal: 20, paddingVertical: 12,
-    borderRadius: 12, maxWidth: width * 0.9,
+    overflow: "hidden",
+    borderRadius: 14, maxWidth: width * 0.9,
+    borderWidth: 1, borderColor: "rgba(255,107,107,0.3)",
   },
-  errorText: { color: "#fca5a5", fontSize: 14, textAlign: "center" },
+  errorText: {
+    color: "#fca5a5", paddingHorizontal: 20, paddingVertical: 12,
+    textAlign: "center", zIndex: 1,
+  },
 
+  // Search panel (glass card)
   searchPanel: {
     position: "absolute",
     top: Platform.OS === "ios" ? 60 : 40,
     alignSelf: "center",
-    width: width * 0.82, // narrower to make room for top controls
-    backgroundColor: "#0f172a",
-    borderRadius: 20,
-    shadowColor: "#000", shadowOpacity: 0.6, shadowRadius: 24,
+    width: width * 0.82,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1, borderColor: C.glassBorder,
+    shadowColor: C.accent, shadowOpacity: 0.08, shadowRadius: 30,
     shadowOffset: { width: 0, height: 8 },
-    elevation: 14, overflow: "hidden",
-    borderWidth: 1, borderColor: "#1e293b",
+    elevation: 14,
   },
-  searchRow:  { flexDirection: "row", alignItems: "center", paddingLeft: 16 },
-  searchIcon: { color: "#475569", fontSize: 20, marginRight: 8 },
+  searchRow:  { flexDirection: "row", alignItems: "center", paddingLeft: 16, zIndex: 1 },
+  searchIcon: { color: C.textSub, fontSize: 20, marginRight: 8 },
   searchInput: {
-    flex: 1, color: "white", fontSize: 17,
+    flex: 1, color: C.text,
     paddingVertical: 18, fontWeight: "500",
   },
   clearBtn:     { paddingHorizontal: 16, paddingVertical: 18 },
-  clearBtnText: { color: "#475569", fontSize: 15 },
+  clearBtnText: { color: C.textSub, fontSize: 15 },
 
-  suggestionList: { borderTopWidth: 1, borderTopColor: "#1e293b", maxHeight: 300 },
+  suggestionList: {
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.glassBorder, maxHeight: 300, zIndex: 1,
+  },
   suggestionItem: {
     paddingHorizontal: 20, paddingVertical: 16,
-    borderBottomWidth: 1, borderBottomColor: "#1e293b",
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.glassBorder,
+    minHeight: 56,
   },
-  suggestionMain: { color: "#f1f5f9", fontSize: 16, fontWeight: "600", marginBottom: 3 },
-  suggestionSub:  { color: "#475569", fontSize: 13 },
+  suggestionMain: { color: C.text, fontWeight: "600", marginBottom: 3 },
+  suggestionSub:  { color: C.textSub },
 
   quietBadge: {
-    backgroundColor: "#052e16",
+    backgroundColor: "rgba(110,231,183,0.12)",
     paddingHorizontal: 16, paddingVertical: 10,
-    borderTopWidth: 1, borderTopColor: "#1e293b",
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.glassBorder,
   },
-  quietBadgeText: { color: "#4ADE80", fontSize: 13, fontWeight: "600" },
+  quietBadgeText: { color: C.accentGreen, fontWeight: "600" },
 
+  // Loading overlay
   loadingOverlay: {
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: "rgba(10,15,30,0.8)",
+    overflow: "hidden",
     alignItems: "center", justifyContent: "center", gap: 16,
   },
-  loadingText: { color: "#94a3b8", fontSize: 16, fontWeight: "500" },
+  loadingText: { color: C.textSub, fontWeight: "500", zIndex: 1 },
 
+  // Status msg (rerouting pill)
   statusMsg: {
-    position: "absolute",
-    bottom: 140,
-    alignSelf: "center",
-    backgroundColor: "#1e293b",
-    paddingHorizontal: 20, paddingVertical: 10,
-    borderRadius: 20,
+    position: "absolute", bottom: 140, alignSelf: "center",
+    overflow: "hidden",
+    borderRadius: 22,
+    borderWidth: 1, borderColor: C.glassBorder,
   },
-  statusMsgText: { color: "#94a3b8", fontSize: 14, fontWeight: "500" },
+  statusMsgText: { color: C.textSub, fontWeight: "500", paddingHorizontal: 20, paddingVertical: 10, zIndex: 1 },
 
+  // Navigation banner
   navBanner: {
     position: "absolute",
     top: Platform.OS === "ios" ? 56 : 36,
     alignSelf: "center",
     width: width * 0.92,
-    backgroundColor: "#0f172a",
-    borderRadius: 22,
-    shadowColor: "#38BDF8", shadowOpacity: 0.2,
-    shadowRadius: 20, shadowOffset: { width: 0, height: 6 },
-    elevation: 14, overflow: "hidden",
-    borderWidth: 1, borderColor: "#1e293b",
+    borderRadius: 24,
+    overflow: "hidden",
+    borderWidth: 1, borderColor: C.glassBorder,
+    shadowColor: C.accent, shadowOpacity: 0.15, shadowRadius: 24, shadowOffset: { width: 0, height: 6 },
+    elevation: 14,
   },
+  navBannerBorder: {
+    position: "absolute", top: 0, left: 0, right: 0, height: 1,
+    backgroundColor: "rgba(255,255,255,0.15)",
+  },
+
   instrContent: {
     flexDirection: "row", alignItems: "center",
-    padding: 18, gap: 16,
+    padding: 18, gap: 16, zIndex: 1,
   },
   turnIconBox: {
-    width: 56, height: 56, borderRadius: 16,
-    backgroundColor: "#38BDF8",
+    width: 60, height: 60, borderRadius: 18,
+    backgroundColor: C.accentSoft,
+    borderWidth: 1, borderColor: C.accent,
     alignItems: "center", justifyContent: "center",
+    shadowColor: C.accent, shadowRadius: 10, shadowOpacity: 0.5,
   },
-  turnIconBoxQuiet: { backgroundColor: "#4ADE80" },
-  turnIconText: { fontSize: 26, color: "#0a0f1e", fontWeight: "800" },
+  turnIconBoxQuiet: {
+    backgroundColor: "rgba(110,231,183,0.2)",
+    borderColor: C.accentGreen,
+    shadowColor: C.accentGreen,
+  },
+  turnIconText: { fontSize: 28, color: C.accent, fontWeight: "800" },
   instrTextBox: { flex: 1 },
-  instrText: {
-    color: "#f1f5f9", fontSize: 18, fontWeight: "700",
-    lineHeight: 24, marginBottom: 5,
-  },
-  instrDist: { color: "#38BDF8", fontSize: 14, fontWeight: "600" },
-  speakHint: { fontSize: 20, opacity: 0.4 },
+  instrText:    { color: C.text, fontWeight: "700", lineHeight: 24, marginBottom: 5 },
+  instrDist:    { color: C.accent, fontWeight: "600" },
+  speakHint:    { fontSize: 20, opacity: 0.4 },
 
-  arrivedContent: { alignItems: "center", padding: 28, gap: 6 },
-  arrivedEmoji: { fontSize: 40 },
-  arrivedTitle: { color: "#f1f5f9", fontSize: 22, fontWeight: "800" },
-  arrivedSub:   { color: "#64748b", fontSize: 14, marginTop: 4 },
+  arrivedContent: { alignItems: "center", padding: 28, gap: 6, zIndex: 1 },
+  arrivedEmoji:   { fontSize: 40 },
+  arrivedTitle:   { color: C.text, fontWeight: "800" },
+  arrivedSub:     { color: C.textSub, marginTop: 4 },
 
+  // Bottom bar
   bottomBar: {
     position: "absolute", bottom: 0, left: 0, right: 0,
-    backgroundColor: "#0f172a",
+    overflow: "hidden",
     paddingBottom: Platform.OS === "ios" ? 36 : 16,
     paddingTop: 18, paddingHorizontal: 24,
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    borderTopWidth: 1, borderTopColor: "#1e293b",
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.glassBorder,
   },
-  etaTime: { color: "#f1f5f9", fontSize: 24, fontWeight: "800" },
-  etaDist: { color: "#64748b", fontSize: 13, fontWeight: "500", marginTop: 3 },
+  etaTime: { color: C.text, fontWeight: "800", zIndex: 1 },
+  etaDist: { color: C.textSub, fontWeight: "500", marginTop: 3, zIndex: 1 },
   stopBtn: {
-    backgroundColor: "#1e293b",
+    backgroundColor: C.dangerSoft,
     paddingHorizontal: 24, paddingVertical: 16,
-    borderRadius: 50, borderWidth: 1, borderColor: "#334155",
+    borderRadius: 50,
+    borderWidth: 1, borderColor: "rgba(255,107,107,0.4)",
+    zIndex: 1,
   },
-  stopBtnText: { color: "#f87171", fontSize: 15, fontWeight: "700" },
+  stopBtnText: { color: C.danger, fontWeight: "700" },
 
+  // Top controls
   topControls: {
     position: "absolute",
     top: Platform.OS === "ios" ? 60 : 40,
-    right: 16,
+    right: 14,
     gap: 10,
   },
-  controlBtn: {
-    width: 52, height: 52, borderRadius: 26,
-    backgroundColor: "#0f172a",
-    alignItems: "center", justifyContent: "center",
-    shadowColor: "#000", shadowOpacity: 0.4,
-    shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
-    elevation: 8, borderWidth: 1, borderColor: "#1e293b",
-  },
-  controlIcon: { color: "#38BDF8", fontSize: 22 },
 });

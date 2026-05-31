@@ -42,3 +42,5 @@ yarn-error.*
 
 * API keys and secrets
 API_KEY.js
+
+.env
